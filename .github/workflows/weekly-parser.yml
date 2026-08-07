@@ -1,0 +1,32 @@
+name: FINVED HH Weekly Parser
+
+on:
+  schedule:
+    # Каждый понедельник в 06:00 UTC = 09:00 по Москве
+    - cron: "0 6 * * 1"
+
+  # Позволяет запускать парсер вручную кнопкой
+  workflow_dispatch:
+
+jobs:
+  parse-vacancies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run FINVED parser
+        env:
+          HH_ACCESS_TOKEN: ${{ secrets.HH_ACCESS_TOKEN }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python parser.py
