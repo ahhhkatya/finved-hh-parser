@@ -2,8 +2,7 @@ name: FINVED HH Weekly Parser
 
 on:
   schedule:
-    # Каждый понедельник в 09:17 по Москве
-    - cron: "40 7 * * 1"
+    - cron: "*/15 * * * *"
 
   workflow_dispatch:
 
