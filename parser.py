@@ -289,31 +289,38 @@ def salary_text(salary: dict[str, Any] | None) -> str:
     return "Не указана"
 
 
-def vacancy_to_row(vacancy: dict[str, Any], scoring: dict[str, Any], collected_at: str) -> list[Any]:
+def vacancy_to_row(
+    vacancy: dict[str, Any],
+    scoring: dict[str, Any],
+    collected_at: str
+) -> dict[str, Any]:
     employer = vacancy.get("employer") or {}
     address = vacancy.get("address") or {}
-    return [
-        vacancy.get("id", ""),
-        collected_at,
-        vacancy.get("published_at", ""),
-        employer.get("name", ""),
-        vacancy.get("name", ""),
-        salary_text(vacancy.get("salary")),
-        safe_get(vacancy, "area", "name"),
-        safe_get(vacancy, "experience", "name"),
-        ", ".join(x.get("name", "") for x in vacancy.get("work_format", [])),
-        scoring["category"],
-        scoring["score"],
-        scoring["reason"],
-        scoring["core_hits"],
-        scoring["positive_hits"],
-        scoring["negative_hits"],
-        normalize_text(vacancy.get("description")),
-        vacancy.get("alternate_url", ""),
-        address.get("raw", ""),
-        "Новый",
-        "",
-    ]
+
+    return {
+        "ID вакансии": str(vacancy.get("id", "")),
+        "Дата сбора": collected_at,
+        "Дата публикации": vacancy.get("published_at", ""),
+        "Компания": employer.get("name", ""),
+        "Должность": vacancy.get("name", ""),
+        "Зарплата": salary_text(vacancy.get("salary")),
+        "Город": safe_get(vacancy, "area", "name"),
+        "Опыт": safe_get(vacancy, "experience", "name"),
+        "Формат работы": ", ".join(
+            x.get("name", "") for x in vacancy.get("work_format", [])
+        ),
+        "Категория": scoring["category"],
+        "Скоринг": scoring["score"],
+        "Почему": scoring["reason"],
+        "Ключевые признаки управленки": scoring["core_hits"],
+        "Положительные сигналы": scoring["positive_hits"],
+        "Стоп-факторы": scoring["negative_hits"],
+        "Описание вакансии": normalize_text(vacancy.get("description")),
+        "Ссылка HH": vacancy.get("alternate_url", ""),
+        "Адрес": address.get("raw", ""),
+        "Статус": "Новый",
+        "Комментарий менеджера": "",
+    }
 
 
 HEADERS = [
@@ -372,13 +379,49 @@ def get_or_create_worksheet(spreadsheet: gspread.Spreadsheet, title: str) -> gsp
 
 
 def existing_ids(ws: gspread.Worksheet) -> set[str]:
-    values = ws.col_values(1)
-    return {str(v).strip() for v in values[1:] if str(v).strip()}
+    headers = ws.row_values(1)
+
+    if "ID вакансии" not in headers:
+        LOGGER.warning(
+            "На листе %s не найден столбец 'ID вакансии'.",
+            ws.title
+        )
+        return set()
+
+    id_column = headers.index("ID вакансии") + 1
+    values = ws.col_values(id_column)
+
+    return {
+        str(v).strip()
+        for v in values[1:]
+        if str(v).strip()
+    }
 
 
-def append_rows_batched(ws: gspread.Worksheet, rows: list[list[Any]], batch_size: int = 100) -> None:
-    for i in range(0, len(rows), batch_size):
-        ws.append_rows(rows[i : i + batch_size], value_input_option="RAW")
+def append_rows_batched(
+    ws: gspread.Worksheet,
+    rows: list[dict[str, Any]],
+    batch_size: int = 100
+) -> None:
+    if not rows:
+        return
+
+    headers = ws.row_values(1)
+
+    formatted_rows = []
+
+    for row in rows:
+        formatted_row = [
+            row.get(header, "")
+            for header in headers
+        ]
+        formatted_rows.append(formatted_row)
+
+    for i in range(0, len(formatted_rows), batch_size):
+        ws.append_rows(
+            formatted_rows[i:i + batch_size],
+            value_input_option="RAW"
+        )
 
 
 def run(config_path: Path) -> None:
@@ -415,8 +458,8 @@ def run(config_path: Path) -> None:
     LOGGER.info("Новых уникальных вакансий до анализа: %s", len(collected))
     collected_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
-    target_rows: list[list[Any]] = []
-    review_rows: list[list[Any]] = []
+    target_rows: list[dict[str, Any]] = []
+    review_rows: list[dict[str, Any]] = []
 
     for idx, vacancy_id in enumerate(collected, 1):
         try:
