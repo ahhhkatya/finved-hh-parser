@@ -59,16 +59,17 @@ def normalize_text(value: str | None) -> str:
 
 
 def contains_phrase(text: str, phrase: str) -> bool:
-
     phrase_n = normalize_text(phrase)
 
     if not phrase_n:
-
         return False
 
     if re.fullmatch(r"[a-zа-я0-9\s-]+", phrase_n):
-
-        return re.search(rf"(?\<!\w){re.escape(phrase_n)}(?!\w)", text, flags=re.I) is not None
+        return re.search(
+            rf"(?<!\w){re.escape(phrase_n)}(?!\w)",
+            text,
+            flags=re.I
+        ) is not None
 
     return phrase_n in text
 
