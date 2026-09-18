@@ -59,17 +59,16 @@ def normalize_text(value: str | None) -> str:
 
 
 def contains_phrase(text: str, phrase: str) -> bool:
+
     phrase_n = normalize_text(phrase)
 
     if not phrase_n:
+
         return False
 
     if re.fullmatch(r"[a-zа-я0-9\s-]+", phrase_n):
-        return re.search(
-            rf"(?<!\w){re.escape(phrase_n)}(?!\w)",
-            text,
-            flags=re.I
-        ) is not None
+
+        return re.search(rf"(?\<!\w){re.escape(phrase_n)}(?!\w)", text, flags=re.I) is not None
 
     return phrase_n in text
 
@@ -508,7 +507,12 @@ def analyze_with_gemini(
         LOGGER.warning("GEMINI_API_KEY не задан. ИИ-поля останутся пустыми.")
         return {}
 
-    model = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    fallback_model = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.7-flash").strip()
+    models = [primary_model]
+    if fallback_model and fallback_model != primary_model:
+        models.append(fallback_model)
+
     employer_info = employer_info or {}
 
     prompt = f"""
@@ -548,7 +552,6 @@ def analyze_with_gemini(
         "required": ["who_and_why", "pains", "offer", "confidence"],
     }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -558,41 +561,98 @@ def analyze_with_gemini(
         },
     }
 
+    # Более длинные паузы помогают пережить временные 429/500/502/503/504.
+    retry_delays = [2, 5, 10, 20, 40]
+    retryable_statuses = {429, 500, 502, 503, 504}
     last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            response = requests.post(
-                url,
-                headers={
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": api_key,
-                },
-                json=payload,
-                timeout=60,
+
+    for model_index, model in enumerate(models):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+        for attempt in range(len(retry_delays) + 1):
+            try:
+                response = requests.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-goog-api-key": api_key,
+                    },
+                    json=payload,
+                    timeout=90,
+                )
+
+                # 4xx вроде неверного ключа/запроса повторять бессмысленно,
+                # кроме 429 (временный лимит).
+                if response.status_code >= 400 and response.status_code not in retryable_statuses:
+                    response.raise_for_status()
+
+                if response.status_code in retryable_statuses:
+                    response.raise_for_status()
+
+                data = response.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                result = json.loads(text)
+
+                confidence = result.get("confidence", "")
+                if confidence not in {"Высокая", "Средняя", "Низкая"}:
+                    confidence = "Низкая"
+
+                if model_index > 0:
+                    LOGGER.info("Gemini fallback-модель %s успешно ответила.", model)
+
+                return {
+                    "who_and_why": str(result.get("who_and_why", "")).strip(),
+                    "pains": str(result.get("pains", "")).strip(),
+                    "offer": str(result.get("offer", "")).strip(),
+                    "confidence": confidence,
+                }
+
+            except requests.HTTPError as exc:
+                last_error = exc
+                status = exc.response.status_code if exc.response is not None else None
+
+                if status not in retryable_statuses:
+                    LOGGER.error("Gemini %s вернул невосстановимую HTTP-ошибку: %s", model, exc)
+                    return {}
+
+                if attempt < len(retry_delays):
+                    wait = retry_delays[attempt]
+                    LOGGER.warning(
+                        "Gemini %s временно недоступен (%s). Повтор через %s сек. (%s/%s)",
+                        model,
+                        status,
+                        wait,
+                        attempt + 1,
+                        len(retry_delays),
+                    )
+                    time.sleep(wait)
+                    continue
+                break
+
+            except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
+                last_error = exc
+                if attempt < len(retry_delays):
+                    wait = retry_delays[attempt]
+                    LOGGER.warning(
+                        "Ошибка Gemini %s: %s. Повтор через %s сек. (%s/%s)",
+                        model,
+                        exc,
+                        wait,
+                        attempt + 1,
+                        len(retry_delays),
+                    )
+                    time.sleep(wait)
+                    continue
+                break
+
+        if model_index + 1 < len(models):
+            LOGGER.warning(
+                "Модель Gemini %s не ответила после повторов. Переключаюсь на %s.",
+                model,
+                models[model_index + 1],
             )
-            response.raise_for_status()
-            data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            result = json.loads(text)
 
-            confidence = result.get("confidence", "")
-            if confidence not in {"Высокая", "Средняя", "Низкая"}:
-                confidence = "Низкая"
-
-            return {
-                "who_and_why": str(result.get("who_and_why", "")).strip(),
-                "pains": str(result.get("pains", "")).strip(),
-                "offer": str(result.get("offer", "")).strip(),
-                "confidence": confidence,
-            }
-        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
-            last_error = exc
-            if attempt < 2:
-                wait = 2 ** attempt
-                LOGGER.warning("Ошибка Gemini: %s. Повтор через %s сек.", exc, wait)
-                time.sleep(wait)
-
-    LOGGER.error("Не удалось получить ИИ-анализ: %s", last_error)
+    LOGGER.error("Не удалось получить ИИ-анализ ни от одной модели Gemini: %s", last_error)
     return {}
 
 
