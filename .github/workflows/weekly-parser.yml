@@ -27,4 +27,5 @@ jobs:
           HH_ACCESS_TOKEN: ${{ secrets.HH_ACCESS_TOKEN }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python parser.py
